@@ -7,16 +7,18 @@ use std::path::PathBuf;
 
 use anyhow::anyhow;
 use clap::{Parser, ValueEnum};
-use ndarray::{Array2, Axis};
+use ndarray::Axis;
 use ndarray_stats::QuantileExt;
-use ort::{CUDAExecutionProvider, ExecutionProvider, Session};
+use ort::{CUDAExecutionProvider, ExecutionProvider, Session, Tensor};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rayon::slice::ParallelSlice;
 use rust_tokenizers::tokenizer::{BertTokenizer, Tokenizer, TruncationStrategy};
 use rust_tokenizers::vocab::{BertVocab, Vocab};
 use rust_tokenizers::Mask;
 
-fn values_to_array2(values: Vec<Vec<i64>>) -> anyhow::Result<ndarray::Array2<i64>> {
+type ShapeAndVector = ([usize; 2], Vec<i64>);
+
+fn pad_and_flatten_vectors(values: Vec<Vec<i64>>) -> anyhow::Result<ShapeAndVector> {
     let nrows = values.len();
     let ncols = values.iter().map(|t| t.len()).max().unwrap_or(0);
     let data = values
@@ -24,8 +26,7 @@ fn values_to_array2(values: Vec<Vec<i64>>) -> anyhow::Result<ndarray::Array2<i64
         .map(|t| zero_pad_vec_to_length(t, ncols))
         .collect::<Result<Vec<Vec<_>>, _>>()?;
     let data = data.into_iter().flatten().collect();
-    let arr: Array2<i64> = Array2::from_shape_vec((nrows, ncols), data)?;
-    anyhow::Ok(arr)
+    anyhow::Ok(([nrows, ncols], data))
 }
 
 const ZERO_512: [i64; 512] = [0_i64; 512];
@@ -157,7 +158,7 @@ fn main() -> anyhow::Result<()> {
             || std::thread::available_parallelism().map_err(anyhow::Error::from),
             |v| NonZeroUsize::new(v).ok_or(anyhow!("Number of threads must be > 0!")),
         )?
-        .get() as i16;
+        .get();
 
     match args.device {
         ImplementedProviders::CPU => (),
@@ -192,7 +193,7 @@ fn main() -> anyhow::Result<()> {
         // .with_optimization_level(GraphOptimizationLevel::Level1)?
         .with_parallel_execution(threads > 1)?
         .with_intra_threads(threads)?
-        .with_model_from_file(model_path)?;
+        .commit_from_file(model_path)?;
 
     let annotations = run_prediction(
         corpus,
@@ -226,18 +227,22 @@ fn run_prediction(
         })
         .collect::<Vec<_>>()
         .into_iter()
-        .map(|(input_ids, attention_mask, tokens)| {
-            let outputs = session.run(ort::inputs![input_ids, attention_mask]?)?;
-            let preds: Vec<Vec<usize>> = outputs[0]
-                .extract_tensor::<f32>()?
-                .view()
-                .map_axis(Axis(2), |v| v.argmax())
-                .rows()
-                .into_iter()
-                .map(|r| r.to_vec().into_iter().collect::<Result<Vec<usize>, _>>())
-                .collect::<Result<Vec<Vec<usize>>, _>>()?;
-            Ok((tokens, preds))
-        })
+        .map(
+            |((input_shape, input_ids), (attention_shape, attention_mask), tokens)| {
+                let input_ids = Tensor::from_array((input_shape, input_ids))?;
+                let attention_mask = Tensor::from_array((attention_shape, attention_mask))?;
+                let outputs = session.run(ort::inputs![input_ids, attention_mask]?)?;
+                let preds: Vec<Vec<usize>> = outputs[0]
+                    .try_extract_tensor::<f32>()?
+                    .view()
+                    .map_axis(Axis(2), |v| v.argmax())
+                    .rows()
+                    .into_iter()
+                    .map(|r| r.to_vec().into_iter().collect::<Result<Vec<usize>, _>>())
+                    .collect::<Result<Vec<Vec<usize>>, _>>()?;
+                Ok((tokens, preds))
+            },
+        )
         .collect::<Result<Vec<_>, anyhow::Error>>()?
         .into_par_iter()
         .flat_map(|(tokens, preds)| {
@@ -251,16 +256,16 @@ fn run_prediction(
 }
 
 fn get_input_ids_and_attention_masks(
-    batch_encoding: &Vec<rust_tokenizers::TokenizedInput>,
-) -> (Array2<i64>, Array2<i64>) {
+    batch_encoding: &[rust_tokenizers::TokenizedInput],
+) -> (ShapeAndVector, ShapeAndVector) {
     let mut input_ids: Vec<Vec<i64>> = Vec::with_capacity(batch_encoding.len());
     let mut attention_mask: Vec<Vec<i64>> = Vec::with_capacity(batch_encoding.len());
     for seq_encoding in batch_encoding.iter() {
         input_ids.push(seq_encoding.token_ids.clone());
         attention_mask.push(vec![1_i64; seq_encoding.token_ids.len()]);
     }
-    let input_ids: Array2<i64> = values_to_array2(input_ids).unwrap();
-    let attention_mask: Array2<i64> = values_to_array2(attention_mask).unwrap();
+    let input_ids = pad_and_flatten_vectors(input_ids).unwrap();
+    let attention_mask = pad_and_flatten_vectors(attention_mask).unwrap();
     (input_ids, attention_mask)
 }
 
