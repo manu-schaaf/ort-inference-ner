@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "nvidia-cublas-cu11>=11.11.3.6",
+    "nvidia-cublas-cu12>=12.8.4.1",
     "onnxruntime>=1.23.2",
     "onnxruntime-gpu>=1.23.2",
     "torch>=2.10.0",

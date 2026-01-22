@@ -9,8 +9,9 @@ edition = "2021"
 anyhow = "*"
 clap = { version = "*", features = ["derive"] }
 ndarray = "*"
-ndarray-stats = "*"
-ort = { version = "2.0.0-rc.8", features = ["ndarray", "half", "download-binaries", "copy-dylibs", "cuda"] }
+ndarray-stats = "0.7.0"
+ort = { version = "=2.0.0-rc.11", features = ["ndarray", "half", "download-binaries", "copy-dylibs", "cuda"] }
+ort-sys = "=2.0.0-rc.11"
 rayon = "*"
 rust_tokenizers = "*"
 serde = "*"

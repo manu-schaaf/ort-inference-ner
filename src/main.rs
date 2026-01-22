@@ -9,7 +9,9 @@ use anyhow::anyhow;
 use clap::{Parser, ValueEnum};
 use ndarray::Axis;
 use ndarray_stats::QuantileExt;
-use ort::{CUDAExecutionProvider, ExecutionProvider, Session, Tensor};
+use ort::ep::{ExecutionProvider, CUDA};
+use ort::session::Session;
+use ort::value::Tensor;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rayon::slice::ParallelSlice;
 use rust_tokenizers::tokenizer::{BertTokenizer, Tokenizer, TruncationStrategy};
@@ -150,7 +152,7 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let builder = Session::builder()?;
+    let mut builder = Session::builder()?;
 
     let threads = args
         .threads
@@ -163,8 +165,8 @@ fn main() -> anyhow::Result<()> {
     match args.device {
         ImplementedProviders::CPU => (),
         ImplementedProviders::CUDA => {
-            let cuda = CUDAExecutionProvider::default().with_device_id(args.device_id as i32);
-            if let Err(err) = cuda.register(&builder) {
+            let cuda = CUDA::default().with_device_id(args.device_id as i32);
+            if let Err(err) = cuda.register(&mut builder) {
                 Err(anyhow!(
                     "Failed to register CUDA execution provider: {err:?}"
                 ))?
@@ -175,9 +177,7 @@ fn main() -> anyhow::Result<()> {
     let model_path = args.model;
     let vocab_path = args.vocab;
 
-    ort::init()
-        // .with_execution_providers([CPUExecutionProvider::default().build()])
-        .commit()?;
+    ort::init().commit();
 
     let corpus: Vec<String> = std::fs::read_to_string(corpus_path)
         .unwrap()
@@ -215,7 +215,7 @@ fn run_prediction(
     chunk_size: usize,
     aggregation: Aggregation,
     tokenizer: BertTokenizer,
-    session: Session,
+    mut session: Session,
 ) -> anyhow::Result<Vec<Vec<Annotation>>> {
     let annotations: Vec<Vec<Annotation>> = corpus
         .par_chunks(chunk_size)
@@ -231,10 +231,9 @@ fn run_prediction(
             |((input_shape, input_ids), (attention_shape, attention_mask), tokens)| {
                 let input_ids = Tensor::from_array((input_shape, input_ids))?;
                 let attention_mask = Tensor::from_array((attention_shape, attention_mask))?;
-                let outputs = session.run(ort::inputs![input_ids, attention_mask]?)?;
+                let outputs = session.run(ort::inputs![input_ids, attention_mask])?;
                 let preds: Vec<Vec<usize>> = outputs[0]
-                    .try_extract_tensor::<f32>()?
-                    .view()
+                    .try_extract_array::<f32>()?
                     .map_axis(Axis(2), |v| v.argmax())
                     .rows()
                     .into_iter()

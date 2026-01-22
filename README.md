@@ -12,7 +12,8 @@ The time of the following three Python and one Rust implementation are compared:
 
 Prior to running the benchmark, the model must be [exported to ONNX](https://huggingface.co/docs/transformers/serialization#exporting-a--transformers-model-to-onnx-with-cli) and be placed in the `data/` folder.
 
-Requires ONNX Runtime [v1.19.0](https://github.com/microsoft/onnxruntime/releases/tag/v1.19.0).
+Building the executable with cargo will download the [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases/tag/v1.19.0),
+but a corresponding CUDA installation is still required.
 
 ## Benchmark
 
@@ -26,6 +27,12 @@ hyperfine --warmup 1 -L device cpu,cuda -L bs 1,8,32,64,128 \
 'python src/python/ort-hf.py -d {device} -b {bs} data/test-1k.txt'
 ```
 
+You may have to change your `LD_LIBRARY_PATH`:
+
+```shell
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$PWD/target/release
+```
+
 ### Results
 
 #### CPU
@@ -35,7 +42,7 @@ hyperfine --warmup 1 -L device cpu,cuda -L bs 1,8,32,64,128 \
 | `baseline.py -b 8` | 12.292 s ±  0.165 s | 11.910 s … 12.437 s |
 | `pipelines.py -b 8` | 12.616 s ±  0.100 s | 12.494 s … 12.848 s |
 | `ort-hf.py -b 1` | 11.129 s ±  0.895 s | 10.421 s … 12.553 s |
-| `onnxruntime-ner -b 128`[^1] | 19.066 s ±  0.129 s | 18.864 s … 19.258 s |
+| `onnxruntime-ner -b 8` | 8.644 s ±  0.075 s | 8.546 s …  8.819 s |
 
 #### CUDA
 
@@ -44,7 +51,7 @@ hyperfine --warmup 1 -L device cpu,cuda -L bs 1,8,32,64,128 \
 | `baseline.py -b 8` | 6.209 s ±  0.041 s | 6.170 s …  6.291 s |
 | `pipelines.py -b 8` | 7.170 s ±  0.043 s | 7.112 s …  7.247 s |
 | `ort-hf.py -b 32` | 4.597 s ±  0.011 s | 4.581 s … 4.619 s |
-| `onnxruntime-ner -b 128`[^1] | 2.473 s ±  0.014 s | 2.458 s …  2.496 s |
+| `onnxruntime-ner -b 4` | 2.233 s ±  0.027 s | 2.233 s ±  0.027 s |
 
 #### Notes
 
@@ -52,5 +59,3 @@ The benchmark was run on a small workstation with an Intel i7-8700 CPU and a Nvi
 Results above are given for batch inference with batch size `-b N`, where `-b 1` indicates no batching.
 Batching usually reduces inference time by at least 1s, regardless of the backend choice.
 However, different batch sizes have an inconsistent effect on `ort-hf.py`: for the CPU backend only, larger batch sizes result in a substantial _runtime increase_ of about 5s.
-
-[^1]: `transformers` times have been updated in 2026, but `onnxruntime-ner` times are ~2y old and were measured with `ort=2.0.0-rc.8`.
